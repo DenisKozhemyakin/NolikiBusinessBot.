@@ -33,10 +33,8 @@ dp = Dispatcher()
 class OrderForm(StatesGroup):
     name = State()
     service = State()
-    area = State()
     address = State()
     phone = State()
-    comment = State()
 
 
 # Головне меню
@@ -51,29 +49,35 @@ def main_menu():
     return keyboard.as_markup(resize_keyboard=True)
 
 
-# Кнопка скасування
+# Скасування
 def cancel_menu():
     keyboard = ReplyKeyboardBuilder()
     keyboard.button(text="❌ Скасувати")
     return keyboard.as_markup(resize_keyboard=True)
 
 
-# Вибір послуги
+# Категорії послуг
+SERVICES = [
+    "🎨 Фарбування",
+    "🖌️ Художній розпис",
+    "🧱 Ремонтні роботи",
+    "🔧 Інші роботи",
+]
+
+
 def services_menu():
     keyboard = ReplyKeyboardBuilder()
 
-    keyboard.button(text="🎨 Фарбування")
-    keyboard.button(text="🧱 Шпаклювання")
-    keyboard.button(text="🏠 Ремонтні роботи")
-    keyboard.button(text="✨ Декоративне оздоблення")
-    keyboard.button(text="🔧 Інші роботи")
-    keyboard.button(text="❌ Скасувати")
+    for service in SERVICES:
+        keyboard.button(text=service)
 
-    keyboard.adjust(2, 2, 1, 1)
+    keyboard.button(text="❌ Скасувати")
+    keyboard.adjust(2, 2, 1)
+
     return keyboard.as_markup(resize_keyboard=True)
 
 
-# Старт
+# Команда /start
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
     await state.clear()
@@ -98,7 +102,7 @@ async def cancel(message: Message, state: FSMContext):
     )
 
 
-# Початок оформлення
+# Початок заявки
 @dp.message(F.text == "🎨 Замовити роботи")
 async def order(message: Message, state: FSMContext):
     await state.clear()
@@ -111,7 +115,7 @@ async def order(message: Message, state: FSMContext):
     )
 
 
-# Ім'я
+# Ім'я клієнта
 @dp.message(OrderForm.name)
 async def order_name(message: Message, state: FSMContext):
     if not message.text or len(message.text.strip()) < 2:
@@ -122,83 +126,43 @@ async def order_name(message: Message, state: FSMContext):
     await state.set_state(OrderForm.service)
 
     await message.answer(
-        "🛠️ Які роботи потрібно виконати?",
+        "🛠️ Оберіть потрібну послугу:",
         reply_markup=services_menu()
     )
 
 
-# Послуга
+# Вибір послуги
 @dp.message(OrderForm.service)
 async def order_service(message: Message, state: FSMContext):
-    if not message.text:
-        await message.answer("Оберіть послугу.")
+    if not message.text or message.text not in SERVICES:
+        await message.answer(
+            "Будь ласка, оберіть послугу кнопкою нижче.",
+            reply_markup=services_menu()
+        )
         return
 
     await state.update_data(service=message.text)
-    await state.set_state(OrderForm.area)
-
-    await message.answer(
-        "📐 Яка приблизна площа робіт у м²?\n\n"
-        "Якщо не знаєте, напишіть «Не знаю».",
-        reply_markup=cancel_menu()
-    )
-
-
-# Площа
-@dp.message(OrderForm.area)
-async def order_area(message: Message, state: FSMContext):
-    if not message.text:
-        await message.answer("Вкажіть площу або напишіть «Не знаю».")
-        return
-
-    await state.update_data(area=message.text)
     await state.set_state(OrderForm.address)
 
     await message.answer(
         "📍 Де розташований об'єкт?\n\n"
-        "Напишіть місто та адресу.",
+        "Вкажіть місто та адресу.",
         reply_markup=cancel_menu()
     )
 
 
-# Адреса
+# Адреса об'єкта
 @dp.message(OrderForm.address)
 async def order_address(message: Message, state: FSMContext):
-    if not message.text:
+    if not message.text or len(message.text.strip()) < 3:
         await message.answer("Вкажіть адресу об'єкта.")
         return
 
-    await state.update_data(address=message.text)
+    await state.update_data(address=message.text.strip())
     await state.set_state(OrderForm.phone)
 
     await message.answer(
         "📱 Вкажіть контактний номер телефону.",
-        reply_markup=cancel_menu()
-    )
-
-
-# Телефон
-@dp.message(OrderForm.phone)
-async def order_phone(message: Message, state: FSMContext):
-    if not message.text:
-        await message.answer("Введіть номер телефону.")
-        return
-
-    phone = re.sub(r"[\s()+-]", "", message.text)
-
-    if not phone.isdigit() or not 9 <= len(phone) <= 15:
-        await message.answer(
-            "❗ Неправильний формат номера.\n"
-            "Приклад: +380XXXXXXXXX"
-        )
-        return
-
-    await state.update_data(phone=message.text.strip())
-    await state.set_state(OrderForm.comment)
-
-    await message.answer(
-        "📝 Додаткові побажання або коментар.\n\n"
-        "Якщо коментарів немає, напишіть «Немає».",
         reply_markup=cancel_menu()
     )
 
@@ -222,14 +186,23 @@ def send_email(subject, body):
     return True
 
 
-# Завершення заявки
-@dp.message(OrderForm.comment)
-async def order_comment(message: Message, state: FSMContext):
+# Телефон і завершення заявки
+@dp.message(OrderForm.phone)
+async def order_phone(message: Message, state: FSMContext):
     if not message.text:
-        await message.answer("Введіть коментар або «Немає».")
+        await message.answer("Введіть номер телефону.")
         return
 
-    await state.update_data(comment=message.text.strip())
+    phone = re.sub(r"[\s()+-]", "", message.text)
+
+    if not phone.isdigit() or not 9 <= len(phone) <= 15:
+        await message.answer(
+            "❗ Неправильний формат номера.\n"
+            "Приклад: +380XXXXXXXXX"
+        )
+        return
+
+    await state.update_data(phone=message.text.strip())
     data = await state.get_data()
 
     username = (
@@ -245,10 +218,8 @@ async def order_comment(message: Message, state: FSMContext):
         "🔔 НОВА ЗАЯВКА — NOLIKI BUSINESS\n\n"
         f"👤 Ім'я: {data['name']}\n"
         f"🛠️ Послуга: {data['service']}\n"
-        f"📐 Площа: {data['area']}\n"
         f"📍 Адреса: {data['address']}\n"
-        f"📱 Телефон: {data['phone']}\n"
-        f"📝 Коментар: {data['comment']}\n\n"
+        f"📱 Телефон: {data['phone']}\n\n"
         f"💬 Telegram: {username}\n"
         f"🆔 Telegram ID: {client_id}\n"
         f"📅 Дата: {date}"
@@ -257,14 +228,12 @@ async def order_comment(message: Message, state: FSMContext):
     telegram_sent = False
     email_sent = False
 
-    # Надсилання в Telegram
     try:
         await bot.send_message(ADMIN_ID, order_text)
         telegram_sent = True
     except Exception as e:
         print(f"Помилка Telegram: {e}")
 
-    # Надсилання на Gmail
     try:
         email_sent = await asyncio.to_thread(
             send_email,
@@ -279,7 +248,8 @@ async def order_comment(message: Message, state: FSMContext):
     if telegram_sent or email_sent:
         await message.answer(
             "✅ Дякуємо! Вашу заявку прийнято.\n\n"
-            "Наш менеджер зв'яжеться з вами найближчим часом.",
+            "Наш менеджер зв'яжеться з вами найближчим часом "
+            "для уточнення деталей.",
             reply_markup=main_menu()
         )
     else:
