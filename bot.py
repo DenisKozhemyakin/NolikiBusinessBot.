@@ -1,10 +1,12 @@
 import asyncio
+import logging
 import os
 import re
 import smtplib
 from datetime import datetime
 from email.message import EmailMessage
 
+import asyncpg
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
@@ -15,7 +17,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 ADMIN_ID = 307321898
 
 EMAIL_TO = "noliki000@gmail.com"
@@ -28,8 +35,84 @@ if not TOKEN:
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+db_pool = None
 
-# Етапи оформлення заявки
+
+# ==========================================
+# БАЗА ДАНИХ ТА АНАЛІТИКА
+# ==========================================
+
+async def init_database():
+    global db_pool
+
+    if not DATABASE_URL:
+        logger.warning("DATABASE_URL не налаштовано")
+        return
+
+    try:
+        db_pool = await asyncpg.create_pool(
+            DATABASE_URL,
+            min_size=1,
+            max_size=3,
+            timeout=10
+        )
+
+        async with db_pool.acquire() as conn:
+
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS bot_users (
+                    user_id BIGINT PRIMARY KEY,
+                    first_seen TIMESTAMPTZ DEFAULT NOW(),
+                    last_seen TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS bot_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    event_type TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+
+        logger.info("PostgreSQL підключено. Таблиці готові.")
+
+    except Exception:
+        logger.exception("Помилка підключення PostgreSQL")
+        db_pool = None
+
+
+async def track_event(message: Message, event_type: str):
+    if db_pool is None or message.from_user is None:
+        return
+
+    user_id = message.from_user.id
+
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+
+                await conn.execute("""
+                    INSERT INTO bot_users (user_id)
+                    VALUES ($1)
+                    ON CONFLICT (user_id)
+                    DO UPDATE SET last_seen = NOW()
+                """, user_id)
+
+                await conn.execute("""
+                    INSERT INTO bot_events (user_id, event_type)
+                    VALUES ($1, $2)
+                """, user_id, event_type)
+
+    except Exception:
+        logger.exception("Помилка запису аналітики")
+
+
+# ==========================================
+# ФОРМА ЗАЯВКИ
+# ==========================================
+
 class OrderForm(StatesGroup):
     name = State()
     service = State()
@@ -37,8 +120,10 @@ class OrderForm(StatesGroup):
     phone = State()
 
 
+# ==========================================
+# КЛАВІАТУРИ
+# ==========================================
 
-# Головне меню
 def main_menu():
     keyboard = ReplyKeyboardBuilder()
 
@@ -49,14 +134,14 @@ def main_menu():
 
     return keyboard.as_markup(resize_keyboard=True)
 
-# Скасування
+
 def cancel_menu():
     keyboard = ReplyKeyboardBuilder()
     keyboard.button(text="❌ Скасувати")
+
     return keyboard.as_markup(resize_keyboard=True)
 
 
-# Категорії послуг
 SERVICES = [
     "🎨 Фарбування",
     "🖌️ Художній розпис",
@@ -77,10 +162,15 @@ def services_menu():
     return keyboard.as_markup(resize_keyboard=True)
 
 
-# Команда /start
+# ==========================================
+# START
+# ==========================================
+
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
     await state.clear()
+
+    await track_event(message, "start")
 
     await message.answer(
         "👋 Вітаємо в Noliki Business!\n\n"
@@ -90,10 +180,18 @@ async def start(message: Message, state: FSMContext):
     )
 
 
-# Скасування заявки
+# ==========================================
+# СКАСУВАННЯ
+# ==========================================
+
 @dp.message(Command("cancel"))
 @dp.message(F.text == "❌ Скасувати")
 async def cancel(message: Message, state: FSMContext):
+    current_state = await state.get_state()
+
+    if current_state is not None:
+        await track_event(message, "order_cancelled")
+
     await state.clear()
 
     await message.answer(
@@ -102,10 +200,16 @@ async def cancel(message: Message, state: FSMContext):
     )
 
 
-# Початок заявки
+# ==========================================
+# ПОЧАТОК ЗАЯВКИ
+# ==========================================
+
 @dp.message(F.text == "🎨 Замовити роботи")
 async def order(message: Message, state: FSMContext):
     await state.clear()
+
+    await track_event(message, "order_started")
+
     await state.set_state(OrderForm.name)
 
     await message.answer(
@@ -115,9 +219,13 @@ async def order(message: Message, state: FSMContext):
     )
 
 
-# Ім'я клієнта
+# ==========================================
+# ІМ'Я
+# ==========================================
+
 @dp.message(OrderForm.name)
 async def order_name(message: Message, state: FSMContext):
+
     if not message.text or len(message.text.strip()) < 2:
         await message.answer("Введіть ваше ім'я.")
         return
@@ -131,9 +239,13 @@ async def order_name(message: Message, state: FSMContext):
     )
 
 
-# Вибір послуги
+# ==========================================
+# ПОСЛУГА
+# ==========================================
+
 @dp.message(OrderForm.service)
 async def order_service(message: Message, state: FSMContext):
+
     if not message.text or message.text not in SERVICES:
         await message.answer(
             "Будь ласка, оберіть послугу кнопкою нижче.",
@@ -151,9 +263,13 @@ async def order_service(message: Message, state: FSMContext):
     )
 
 
-# Адреса об'єкта
+# ==========================================
+# АДРЕСА
+# ==========================================
+
 @dp.message(OrderForm.address)
 async def order_address(message: Message, state: FSMContext):
+
     if not message.text or len(message.text.strip()) < 3:
         await message.answer("Вкажіть адресу об'єкта.")
         return
@@ -167,10 +283,14 @@ async def order_address(message: Message, state: FSMContext):
     )
 
 
-# Надсилання email
+# ==========================================
+# EMAIL
+# ==========================================
+
 def send_email(subject, body):
+
     if not EMAIL_USER or not EMAIL_PASSWORD:
-        print("Email ще не налаштовано")
+        logger.warning("Email не налаштовано")
         return False
 
     msg = EmailMessage()
@@ -179,16 +299,25 @@ def send_email(subject, body):
     msg["To"] = EMAIL_TO
     msg.set_content(body)
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as smtp:
+    with smtplib.SMTP_SSL(
+        "smtp.gmail.com",
+        465,
+        timeout=20
+    ) as smtp:
+
         smtp.login(EMAIL_USER, EMAIL_PASSWORD)
         smtp.send_message(msg)
 
     return True
 
 
-# Телефон і завершення заявки
+# ==========================================
+# ТЕЛЕФОН І ЗАВЕРШЕННЯ ЗАЯВКИ
+# ==========================================
+
 @dp.message(OrderForm.phone)
 async def order_phone(message: Message, state: FSMContext):
+
     if not message.text:
         await message.answer("Введіть номер телефону.")
         return
@@ -231,8 +360,8 @@ async def order_phone(message: Message, state: FSMContext):
     try:
         await bot.send_message(ADMIN_ID, order_text)
         telegram_sent = True
-    except Exception as e:
-        print(f"Помилка Telegram: {e}")
+    except Exception:
+        logger.exception("Помилка Telegram")
 
     try:
         email_sent = await asyncio.to_thread(
@@ -240,18 +369,22 @@ async def order_phone(message: Message, state: FSMContext):
             "Нова заявка — Noliki Business",
             order_text
         )
-    except Exception as e:
-        print(f"Помилка Email: {e}")
+    except Exception:
+        logger.exception("Помилка Email")
 
     await state.clear()
 
     if telegram_sent or email_sent:
+
+        await track_event(message, "order_completed")
+
         await message.answer(
             "✅ Дякуємо! Вашу заявку прийнято.\n\n"
             "Наш менеджер зв'яжеться з вами найближчим часом "
             "для уточнення деталей.",
             reply_markup=main_menu()
         )
+
     else:
         await message.answer(
             "⚠️ Не вдалося передати заявку менеджеру.\n\n"
@@ -262,12 +395,15 @@ async def order_phone(message: Message, state: FSMContext):
         )
 
 
+# ==========================================
+# КОНТАКТИ
+# ==========================================
 
-
-
-# Контакти
 @dp.message(F.text == "📞 Контакти")
 async def contacts(message: Message):
+
+    await track_event(message, "contacts_opened")
+
     await message.answer(
         "📞 КОНТАКТИ NOLIKI BUSINESS\n\n"
         "📱 Телефон: +380934002520\n\n"
@@ -279,19 +415,37 @@ async def contacts(message: Message):
     )
 
 
-# Інші повідомлення
+# ==========================================
+# ІНШІ ПОВІДОМЛЕННЯ
+# ==========================================
+
 @dp.message()
 async def other_messages(message: Message):
+
     await message.answer(
         "Оберіть потрібний розділ у меню.",
         reply_markup=main_menu()
     )
 
 
-# Запуск
+# ==========================================
+# ЗАПУСК
+# ==========================================
+
 async def main():
-    print("🤖 Telegram-бот запущений!")
-    await dp.start_polling(bot)
+
+    await init_database()
+
+    logger.info("Telegram-бот запущений")
+
+    try:
+        await dp.start_polling(bot)
+
+    finally:
+        if db_pool is not None:
+            await db_pool.close()
+
+        await bot.session.close()
 
 
 if __name__ == "__main__":
