@@ -37,17 +37,17 @@ class OrderForm(StatesGroup):
     phone = State()
 
 
+
 # Головне меню
 def main_menu():
     keyboard = ReplyKeyboardBuilder()
 
     keyboard.button(text="🎨 Замовити роботи")
-    keyboard.button(text="💰 Розрахувати вартість")
     keyboard.button(text="📞 Контакти")
 
-    keyboard.adjust(2, 1)
-    return keyboard.as_markup(resize_keyboard=True)
+    keyboard.adjust(2)
 
+    return keyboard.as_markup(resize_keyboard=True)
 
 # Скасування
 def cancel_menu():
@@ -262,13 +262,7 @@ async def order_phone(message: Message, state: FSMContext):
         )
 
 
-# Калькулятор
-@dp.message(F.text == "💰 Розрахувати вартість")
-async def calculate(message: Message):
-    await message.answer(
-        "💰 Калькулятор вартості робіт.\n\n"
-        "Незабаром тут можна буде розрахувати ціну."
-    )
+
 
 
 # Контакти
