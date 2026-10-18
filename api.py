@@ -623,20 +623,32 @@ async def meta_facebook_stats(
             "insights": {},
             "insights_note": "Охоплення й перегляди потребують окремої перевірки доступних метрик Meta Insights.",
         }
-        posts = await meta_graph_get(
-            client,
-            f"{page['id']}/posts",
-            page_token,
-            fields="id,message,created_time,permalink_url,reactions.summary(true).limit(0),comments.summary(true).limit(0)",
-            limit=10,
-        )
-        for post in posts.get("data", []):
-            result["recent_posts"].append({
-                "id": post.get("id"),
-                "message": post.get("message"),
-                "created_time": post.get("created_time"),
-                "permalink_url": post.get("permalink_url"),
-                "reactions_count": post.get("reactions", {}).get("summary", {}).get("total_count"),
-                "comments_count": post.get("comments", {}).get("summary", {}).get("total_count"),
-            })
+        # Помилка читання публікацій не повинна блокувати базові показники.
+        result["posts_status"] = "ok"
+        result["posts_error"] = None
+        try:
+            posts = await meta_graph_get(
+                client,
+                f"{page['id']}/posts",
+                page_token,
+                fields="id,message,created_time,permalink_url,reactions.summary(true).limit(0),comments.summary(true).limit(0)",
+                limit=10,
+            )
+        except HTTPException as exc:
+            # Не розкриваємо токени чи внутрішні повідомлення Meta.
+            result["posts_status"] = "unavailable"
+            result["posts_error"] = (
+                exc.detail if isinstance(exc.detail, dict)
+                else {"message": "Не вдалося отримати публікації Facebook"}
+            )
+        else:
+            for post in posts.get("data", []):
+                result["recent_posts"].append({
+                    "id": post.get("id"),
+                    "message": post.get("message"),
+                    "created_time": post.get("created_time"),
+                    "permalink_url": post.get("permalink_url"),
+                    "reactions_count": post.get("reactions", {}).get("summary", {}).get("total_count"),
+                    "comments_count": post.get("comments", {}).get("summary", {}).get("total_count"),
+                })
         return result
