@@ -204,7 +204,7 @@ async def login(data: LoginRequest):
 
 class RegisterRequest(BaseModel):
     email: str = Field(min_length=3, max_length=254)
-    password: str = Field(min_length=12, max_length=256)
+    password: str = Field(min_length=8, max_length=256)
 
 
 def normalize_email(email: str) -> str:
@@ -250,6 +250,8 @@ async def current_user(authorization: str | None) -> dict:
 
 @app.post("/auth/register", status_code=201)
 async def register_user(data: RegisterRequest):
+    if not re.search(r"[A-Za-z]", data.password) or not re.search(r"[0-9]", data.password):
+        raise HTTPException(status_code=422, detail="Пароль має містити латинські літери та цифри")
     email = normalize_email(data.email)
     salt = secrets.token_bytes(16)
     salt_encoded = base64.b64encode(salt).decode("ascii")
