@@ -652,3 +652,93 @@ async def meta_facebook_stats(
                     "comments_count": post.get("comments", {}).get("summary", {}).get("total_count"),
                 })
         return result
+
+
+# =====================================
+# META — INSTAGRAM: ПЕРЕВІРКА ПІДКЛЮЧЕННЯ
+# =====================================
+
+@app.get("/meta/instagram/check")
+async def meta_instagram_check(
+    x_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+):
+    """Перевіряє IG Business/Creator, прив'язаний до відомої Facebook Page.
+
+    Не повертає жодних access token або сирих повідомлень Meta.
+    """
+    await check_access(x_api_key, authorization)
+    target_page_id = "113368974934371"
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        pages = await get_facebook_pages(client)
+        page = next(
+            (item for item in pages if str(item.get("id")) == target_page_id),
+            None,
+        )
+        if page is None:
+            return {
+                "connected": False,
+                "reason": "facebook_page_not_available",
+                "facebook_page_id": target_page_id,
+            }
+
+        page_token = page.get("access_token")
+        if not page_token:
+            return {
+                "connected": False,
+                "reason": "page_token_missing",
+                "facebook_page_id": target_page_id,
+            }
+
+        try:
+            link = await meta_graph_get(
+                client,
+                target_page_id,
+                page_token,
+                fields="id,name,instagram_business_account{id,username}",
+            )
+        except HTTPException as exc:
+            return {
+                "connected": False,
+                "reason": "instagram_lookup_failed",
+                "facebook_page_id": target_page_id,
+                "error": exc.detail if isinstance(exc.detail, dict)
+                else {"message": "Помилка перевірки Instagram"},
+            }
+
+        ig = link.get("instagram_business_account")
+        if not ig or not ig.get("id"):
+            return {
+                "connected": False,
+                "reason": "instagram_account_not_returned",
+                "facebook_page_id": target_page_id,
+                "facebook_page_name": page.get("name"),
+            }
+
+        result = {
+            "connected": True,
+            "facebook_page_id": target_page_id,
+            "facebook_page_name": page.get("name"),
+            "instagram": {
+                "id": ig.get("id"),
+                "username": ig.get("username"),
+                "followers_count": None,
+            },
+            "followers_status": "unavailable",
+        }
+        try:
+            profile = await meta_graph_get(
+                client,
+                str(ig["id"]),
+                page_token,
+                fields="id,username,followers_count",
+            )
+            result["instagram"]["username"] = profile.get("username") or ig.get("username")
+            result["instagram"]["followers_count"] = profile.get("followers_count")
+            result["followers_status"] = "ok" if profile.get("followers_count") is not None else "unavailable"
+        except HTTPException as exc:
+            result["followers_error"] = exc.detail if isinstance(exc.detail, dict) else {
+                "message": "Не вдалося отримати кількість підписників"
+            }
+        return result
