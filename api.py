@@ -768,3 +768,74 @@ async def meta_instagram_check(
         if not instagram_accounts:
             result["reason"] = "instagram_account_not_returned_on_accessible_pages"
         return result
+
+# =====================================
+# META — INSTAGRAM: ПРЯМА ПЕРЕВІРКА
+# =====================================
+
+# Instagram ID підтверджений через Graph API Explorer.
+# Не залежить від того, чи повертає /me/accounts пов'язану Facebook Page.
+INSTAGRAM_ACCOUNT_ID = os.getenv("META_INSTAGRAM_ACCOUNT_ID", "17841402272405774")
+
+
+@app.get("/meta/instagram/stats")
+async def meta_instagram_stats(
+    x_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+):
+    """Публічні показники IG і добове охоплення; токени не видаються клієнту."""
+    await check_access(x_api_key, authorization)
+    user_token = await get_saved_meta_token()
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        try:
+            profile = await meta_graph_get(
+                client,
+                INSTAGRAM_ACCOUNT_ID,
+                user_token,
+                fields="id,username,name,followers_count,media_count",
+            )
+        except HTTPException as exc:
+            return {
+                "connected": False,
+                "instagram_id": INSTAGRAM_ACCOUNT_ID,
+                "reason": "instagram_profile_unavailable",
+                "error": exc.detail if isinstance(exc.detail, dict)
+                         else {"message": "Не вдалося отримати профіль Instagram"},
+            }
+
+        result = {
+            "connected": True,
+            "instagram": {
+                "id": profile.get("id"),
+                "username": profile.get("username"),
+                "name": profile.get("name"),
+                "followers_count": profile.get("followers_count"),
+                "media_count": profile.get("media_count"),
+            },
+            "reach": [],
+            "reach_status": "unavailable",
+        }
+        try:
+            insights = await meta_graph_get(
+                client,
+                f"{INSTAGRAM_ACCOUNT_ID}/insights",
+                user_token,
+                metric="reach",
+                period="day",
+            )
+            for metric in insights.get("data", []):
+                if metric.get("name") == "reach":
+                    result["reach"] = [
+                        {"value": point.get("value"), "end_time": point.get("end_time")}
+                        for point in metric.get("values", [])
+                    ]
+                    result["reach_status"] = "ok"
+                    break
+        except HTTPException as exc:
+            result["reach_error"] = (
+                exc.detail if isinstance(exc.detail, dict)
+                else {"message": "Не вдалося отримати охоплення Instagram"}
+            )
+        return result
+
