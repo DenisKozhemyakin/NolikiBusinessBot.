@@ -3,3 +3,5 @@ python-dotenv==1.2.4
 asyncpg==0.31.0
 fastapi
 uvicorn
+httpx
+cryptography
