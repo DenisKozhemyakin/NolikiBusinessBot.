@@ -42,9 +42,6 @@ META_SCOPES = [
 SESSION_LIFETIME = 24 * 60 * 60
 OAUTH_STATE_LIFETIME = 10 * 60
 
-sessions = {}
-oauth_states = {}
-
 pool = None
 fernet = None
 
@@ -82,6 +79,18 @@ async def lifespan(app: FastAPI):
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS viewcontrol_sessions (
+                token_hash TEXT PRIMARY KEY,
+                expires_at TIMESTAMPTZ NOT NULL
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS viewcontrol_oauth_states (
+                state_hash TEXT PRIMARY KEY,
+                expires_at TIMESTAMPTZ NOT NULL
+            )
+        """)
 
     try:
         yield
@@ -117,26 +126,28 @@ def check_password(password: str) -> bool:
     )
 
 
-def check_access(
+async def check_access(
     api_key: str | None,
     authorization: str | None
 ):
-    if api_key and API_KEY and hmac.compare_digest(
-        api_key, API_KEY
-    ):
+    if api_key and API_KEY and hmac.compare_digest(api_key, API_KEY):
         return True
 
     if authorization and authorization.startswith("Bearer "):
-        token = authorization[7:]
-        expires = sessions.get(token)
+        token = authorization[7:].strip()
+        if token:
+            token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+            async with pool.acquire() as conn:
+                valid = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM viewcontrol_sessions
+                        WHERE token_hash = $1 AND expires_at > NOW()
+                    )
+                """, token_hash)
+            if valid:
+                return True
 
-        if expires and expires > time.time():
-            return True
-
-    raise HTTPException(
-        status_code=401,
-        detail="Unauthorized"
-    )
+    raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 @app.get("/health")
@@ -154,7 +165,12 @@ async def login(data: LoginRequest):
 
     token = secrets.token_urlsafe(32)
 
-    sessions[token] = time.time() + SESSION_LIFETIME
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO viewcontrol_sessions (token_hash, expires_at)
+            VALUES ($1, NOW() + ($2::BIGINT * INTERVAL '1 second'))
+        """, token_hash, SESSION_LIFETIME)
 
     return {
         "access_token": token,
@@ -172,7 +188,7 @@ async def get_stats(
     x_api_key: str | None = Header(default=None),
     authorization: str | None = Header(default=None)
 ):
-    check_access(x_api_key, authorization)
+    await check_access(x_api_key, authorization)
 
     async with pool.acquire() as conn:
         users = await conn.fetchval(
@@ -236,12 +252,17 @@ async def meta_connect(
     x_api_key: str | None = Header(default=None),
     authorization: str | None = Header(default=None)
 ):
-    check_access(x_api_key, authorization)
+    await check_access(x_api_key, authorization)
     require_meta_config()
 
     state = secrets.token_urlsafe(32)
 
-    oauth_states[state] = time.time() + OAUTH_STATE_LIFETIME
+    state_hash = hashlib.sha256(state.encode("utf-8")).hexdigest()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO viewcontrol_oauth_states (state_hash, expires_at)
+            VALUES ($1, NOW() + ($2::BIGINT * INTERVAL '1 second'))
+        """, state_hash, OAUTH_STATE_LIFETIME)
 
     params = {
         "client_id": META_APP_ID,
@@ -281,9 +302,15 @@ async def meta_callback(
             detail="Відсутній OAuth state"
         )
 
-    expires = oauth_states.pop(state, None)
+    state_hash = hashlib.sha256(state.encode("utf-8")).hexdigest()
+    async with pool.acquire() as conn:
+        valid_state = await conn.fetchval("""
+            DELETE FROM viewcontrol_oauth_states
+            WHERE state_hash = $1 AND expires_at > NOW()
+            RETURNING state_hash
+        """, state_hash)
 
-    if not expires or expires < time.time():
+    if not valid_state:
         raise HTTPException(
             status_code=400,
             detail="Недійсний або прострочений OAuth state"
@@ -436,7 +463,7 @@ async def meta_status(
     x_api_key: str | None = Header(default=None),
     authorization: str | None = Header(default=None)
 ):
-    check_access(x_api_key, authorization)
+    await check_access(x_api_key, authorization)
 
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
