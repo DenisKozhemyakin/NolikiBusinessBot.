@@ -3,6 +3,8 @@ import hmac
 import hashlib
 import secrets
 import time
+import re
+import base64
 from contextlib import asynccontextmanager
 from urllib.parse import urlencode
 
@@ -11,7 +13,7 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi import FastAPI, Header, HTTPException, Request, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # =====================================
@@ -82,6 +84,23 @@ async def lifespan(app: FastAPI):
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS viewcontrol_sessions (
                 token_hash TEXT PRIMARY KEY,
+                expires_at TIMESTAMPTZ NOT NULL
+            )
+        """)
+        # Separate customer identities. Existing admin sessions are untouched.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS viewcontrol_users (
+                id BIGSERIAL PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                password_salt TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS viewcontrol_user_sessions (
+                token_hash TEXT PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES viewcontrol_users(id) ON DELETE CASCADE,
                 expires_at TIMESTAMPTZ NOT NULL
             )
         """)
@@ -177,6 +196,106 @@ async def login(data: LoginRequest):
         "token_type": "bearer",
         "expires_in": SESSION_LIFETIME
     }
+
+
+# =====================================
+# USER ACCOUNTS — isolated from legacy admin access
+# =====================================
+
+class RegisterRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=12, max_length=256)
+
+
+def normalize_email(email: str) -> str:
+    value = email.strip().lower()
+    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
+        raise HTTPException(status_code=422, detail="Некоректний email")
+    return value
+
+
+def hash_user_password(password: str, salt: bytes) -> str:
+    # Standard-library scrypt: per-user random salt and expensive password hashing.
+    derived = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1)
+    return base64.b64encode(derived).decode("ascii")
+
+
+async def issue_user_session(user_id: int) -> dict:
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO viewcontrol_user_sessions (token_hash, user_id, expires_at)
+            VALUES ($1, $2, NOW() + ($3::BIGINT * INTERVAL '1 second'))
+        """, token_hash, user_id, SESSION_LIFETIME)
+    return {"access_token": token, "token_type": "bearer", "expires_in": SESSION_LIFETIME}
+
+
+async def current_user(authorization: str | None) -> dict:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Потрібна авторизація")
+    token = authorization[7:].strip()
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT u.id, u.email
+            FROM viewcontrol_user_sessions s
+            JOIN viewcontrol_users u ON u.id = s.user_id
+            WHERE s.token_hash = $1 AND s.expires_at > NOW()
+        """, token_hash)
+    if row is None:
+        raise HTTPException(status_code=401, detail="Сесія недійсна або завершилася")
+    return {"id": row["id"], "email": row["email"]}
+
+
+@app.post("/auth/register", status_code=201)
+async def register_user(data: RegisterRequest):
+    email = normalize_email(data.email)
+    salt = secrets.token_bytes(16)
+    salt_encoded = base64.b64encode(salt).decode("ascii")
+    password_hash = hash_user_password(data.password, salt)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            INSERT INTO viewcontrol_users (email, password_salt, password_hash)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (email) DO NOTHING
+            RETURNING id
+        """, email, salt_encoded, password_hash)
+    if row is None:
+        raise HTTPException(status_code=409, detail="Email уже зареєстрований")
+    return await issue_user_session(row["id"])
+
+
+@app.post("/auth/login")
+async def login_user(data: RegisterRequest):
+    email = normalize_email(data.email)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT id, password_salt, password_hash
+            FROM viewcontrol_users WHERE email = $1
+        """, email)
+    # Keep error generic: don't reveal whether the email exists.
+    if row is None:
+        raise HTTPException(status_code=401, detail="Невірний email або пароль")
+    salt = base64.b64decode(row["password_salt"])
+    expected = hash_user_password(data.password, salt)
+    if not hmac.compare_digest(expected, row["password_hash"]):
+        raise HTTPException(status_code=401, detail="Невірний email або пароль")
+    return await issue_user_session(row["id"])
+
+
+@app.get("/auth/me")
+async def user_profile(authorization: str | None = Header(default=None)):
+    return await current_user(authorization)
+
+
+@app.post("/auth/logout")
+async def logout_user(authorization: str | None = Header(default=None)):
+    await current_user(authorization)
+    token_hash = hashlib.sha256(authorization[7:].strip().encode("utf-8")).hexdigest()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM viewcontrol_user_sessions WHERE token_hash = $1", token_hash)
+    return {"ok": True}
 
 
 # =====================================
