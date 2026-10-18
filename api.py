@@ -1,3 +1,184 @@
+сьогодні 14:10
+Шо з тобою на компʼютері стало
+\Вставлений text(3).txt
+Документ
+\Вставлений text(4).txt
+Документ
+\Вставлений text(5).txt
+Документ
+Вставлено код(1).ts
+TypeScript
+\Вставлений text(6).txt
+Документ
+Вставлено код(2).ts
+TypeScript
+\Вставлений text(7).txt
+Документ
+
+Зрозумів! 👍
+
+Отже, ти щойно сам прив'язав Instagram до Facebook-сторінки «Рисуем на заказ/Портреты, Картины».
+
+Раніше наш сервер шукав Instagram через сторінку «Танюшка Чернявская», тому й отримував:
+
+instagram_account_not_returned
+
+Тепер перевіримо, чи бачить Meta нове підключення.
+
+Крок 134.9 — повторна перевірка
+Повернися до Swagger у браузері.
+Відкрий GET /meta/instagram/check.
+Натисни Execute (API-ключ, якщо залишився в полі, повторно вводити не потрібно).
+Скопіюй Response body.
+
+Надішли результат сюди.
+
+Якщо перевірка знову покаже instagram_account_not_returned, з'ясуємо, чи запит перевіряє лише сторінку «Танюшка Чернявская». У такому разі змінимо його, щоб він перевіряв обидві Facebook-сторінки.
+
+Поки нічого більше не змінюй.
+
+Бачу результат. Тепер зрозуміло, чому перевірка не спрацювала.
+
+Сервер повертає:
+
+{
+  "connected": false,
+  "reason": "instagram_account_not_returned",
+  "facebook_page_id": "113368974934371"
+}
+
+Проблема в тому, що сервер досі перевіряє стару Facebook-сторінку:
+
+113368974934371 — «Танюшка Чернявская».
+467094246750917 — «Рисуем на заказ/Портреты, Картины», яку ти щойно вибрав в Instagram.
+Крок 135 — виправляємо перевірку Instagram
+
+Зробимо правильніше: ViewControl автоматично перевірятиме обидві Facebook-сторінки, а не одну конкретну.
+
+Так ми зможемо визначити, до якої сторінки прив'язаний Instagram, і отримати його дані.
+
+Зараз зроби одну дію:
+
+Надішли мені актуальний файл api.py із GitHub після останнього оновлення.
+
+Я підготую готовий файл для заміни, щоб не зачепити вже працюючі Facebook і Telegram.
+
+Після цього повторимо перевірку Instagram.
+
+\Вставлений text(8).txt
+Документ
+
+Отримав актуальний api.py. Знайшов причину: перевірка Instagram була прив'язана лише до Facebook-сторінки «Танюшка Чернявская» (113368974934371).
+
+✅ Крок 135 — виправляємо перевірку Instagram
+
+Я підготував новий файл, у якому ViewControl:
+
+Перевіряє обидві Facebook-сторінки автоматично.
+Шукає прив'язаний Instagram-акаунт.
+Отримує його ім'я та кількість підписників, якщо Meta дозволяє.
+Не припиняє перевірку, якщо одна зі сторінок повертає помилку.
+Зберігає наявні функції Facebook і Telegram.
+
+📥 
+Завантажити оновлений api.py
+
+Файл перевірено на синтаксичні помилки Python. Роботу з Meta перевіримо після розгортання.
+
+Що робимо зараз
+Відкрий GitHub → NolikiBusinessBot → api.py.
+Натисни ✏️ Edit.
+Виділи весь код через Ctrl + A.
+Встав код із завантаженого файлу.
+Натисни Commit changes.
+Дочекайся повідомлення «Успішне розгортання» в Railway.
+
+Поки нічого не змінюй у VS Code.
+
+Коли Railway завершить оновлення, напиши «Готово». Тоді перевіримо Instagram через Swagger і побачимо, до якої Facebook-сторінки він прив'язаний.
+
+api_viewcontrol_instagram_all_pages.py
+Код
+
+Бібліотека
+/
+api_viewcontrol_instagram_all_pages.py
+999
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+71
+72
+73
+74
+75
 import os
 import hmac
 import hashlib
@@ -5,6 +186,7 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 from urllib.parse import urlencode
+
 
 import asyncpg
 import httpx
@@ -14,13 +196,17 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
 
+
+
 # =====================================
 # НАЛАШТУВАННЯ
 # =====================================
 
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 API_KEY = os.getenv("VIEWCONTROL_API_KEY")
 PASSWORD_HASH = os.getenv("VIEWCONTROL_PASSWORD_HASH")
+
 
 META_APP_ID = os.getenv("META_APP_ID")
 META_APP_SECRET = os.getenv("META_APP_SECRET")
@@ -28,7 +214,9 @@ META_REDIRECT_URI = os.getenv("META_REDIRECT_URI")
 META_ENCRYPTION_KEY = os.getenv("META_ENCRYPTION_KEY")
 META_CONFIG_ID = os.getenv("META_CONFIG_ID")
 
+
 META_GRAPH_VERSION = "v24.0"
+
 
 META_SCOPES = [
     "public_profile",
@@ -39,28 +227,36 @@ META_SCOPES = [
     "instagram_manage_insights",
 ]
 
+
 SESSION_LIFETIME = 24 * 60 * 60
 OAUTH_STATE_LIFETIME = 10 * 60
 
+
 pool = None
 fernet = None
+
+
 
 
 # =====================================
 # ЗАПУСК СЕРВЕРА
 # =====================================
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global pool, fernet
+
 
     if not DATABASE_URL or not API_KEY:
         raise RuntimeError(
             "DATABASE_URL або VIEWCONTROL_API_KEY не налаштовано"
         )
 
+
     if META_ENCRYPTION_KEY:
         fernet = Fernet(META_ENCRYPTION_KEY.encode())
+
 
     pool = await asyncpg.create_pool(
         DATABASE_URL,
@@ -68,677 +264,9 @@ async def lifespan(app: FastAPI):
         max_size=3
     )
 
+
     async with pool.acquire() as conn:
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS meta_connections (
                 id SERIAL PRIMARY KEY,
                 meta_user_id TEXT NOT NULL UNIQUE,
-                encrypted_token TEXT NOT NULL,
-                token_expires_at TIMESTAMPTZ,
-                connected_at TIMESTAMPTZ DEFAULT NOW(),
-                updated_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS viewcontrol_sessions (
-                token_hash TEXT PRIMARY KEY,
-                expires_at TIMESTAMPTZ NOT NULL
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS viewcontrol_oauth_states (
-                state_hash TEXT PRIMARY KEY,
-                expires_at TIMESTAMPTZ NOT NULL
-            )
-        """)
-
-    try:
-        yield
-    finally:
-        await pool.close()
-
-
-app = FastAPI(
-    title="ViewControl API",
-    lifespan=lifespan
-)
-
-
-class LoginRequest(BaseModel):
-    password: str
-
-
-# =====================================
-# АВТОРИЗАЦІЯ VIEWCONTROL
-# =====================================
-
-def check_password(password: str) -> bool:
-    if not PASSWORD_HASH:
-        return False
-
-    entered_hash = hashlib.sha256(
-        password.encode("utf-8")
-    ).hexdigest()
-
-    return hmac.compare_digest(
-        entered_hash,
-        PASSWORD_HASH
-    )
-
-
-async def check_access(
-    api_key: str | None,
-    authorization: str | None
-):
-    if api_key and API_KEY and hmac.compare_digest(api_key, API_KEY):
-        return True
-
-    if authorization and authorization.startswith("Bearer "):
-        token = authorization[7:].strip()
-        if token:
-            token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-            async with pool.acquire() as conn:
-                valid = await conn.fetchval("""
-                    SELECT EXISTS (
-                        SELECT 1 FROM viewcontrol_sessions
-                        WHERE token_hash = $1 AND expires_at > NOW()
-                    )
-                """, token_hash)
-            if valid:
-                return True
-
-    raise HTTPException(status_code=401, detail="Unauthorized")
-
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-
-@app.post("/login")
-async def login(data: LoginRequest):
-    if not check_password(data.password):
-        raise HTTPException(
-            status_code=401,
-            detail="Неправильний пароль"
-        )
-
-    token = secrets.token_urlsafe(32)
-
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO viewcontrol_sessions (token_hash, expires_at)
-            VALUES ($1, NOW() + ($2::BIGINT * INTERVAL '1 second'))
-        """, token_hash, SESSION_LIFETIME)
-
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "expires_in": SESSION_LIFETIME
-    }
-
-
-# =====================================
-# TELEGRAM — ЗАЛИШАЄМО БЕЗ ЗМІН
-# =====================================
-
-@app.get("/stats")
-async def get_stats(
-    x_api_key: str | None = Header(default=None),
-    authorization: str | None = Header(default=None)
-):
-    await check_access(x_api_key, authorization)
-
-    async with pool.acquire() as conn:
-        users = await conn.fetchval(
-            "SELECT COUNT(*) FROM bot_users"
-        )
-
-        events = await conn.fetch("""
-            SELECT event_type, COUNT(*) AS total
-            FROM bot_events
-            GROUP BY event_type
-        """)
-
-    counts = {
-        row["event_type"]: row["total"]
-        for row in events
-    }
-
-    return {
-        "users": users,
-        "orders_started": counts.get("order_started", 0),
-        "orders_completed": counts.get("order_completed", 0),
-        "orders_cancelled": counts.get("order_cancelled", 0),
-        "contacts_opened": counts.get("contacts_opened", 0)
-    }
-
-
-# =====================================
-# META — ДОПОМІЖНІ ФУНКЦІЇ
-# =====================================
-
-def require_meta_config():
-    if not all([
-        META_APP_ID,
-        META_APP_SECRET,
-        META_REDIRECT_URI,
-        META_CONFIG_ID,
-        fernet
-    ]):
-        raise HTTPException(
-            status_code=503,
-            detail="Meta API не налаштовано"
-        )
-
-
-def get_meta_connection_status():
-    return "configured" if all([
-        META_APP_ID,
-        META_APP_SECRET,
-        META_REDIRECT_URI,
-        META_CONFIG_ID,
-        fernet
-    ]) else "not_configured"
-
-
-# =====================================
-# META — ПОЧАТОК АВТОРИЗАЦІЇ
-# =====================================
-
-@app.get("/meta/connect")
-async def meta_connect(
-    x_api_key: str | None = Header(default=None),
-    authorization: str | None = Header(default=None)
-):
-    await check_access(x_api_key, authorization)
-    require_meta_config()
-
-    state = secrets.token_urlsafe(32)
-
-    state_hash = hashlib.sha256(state.encode("utf-8")).hexdigest()
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO viewcontrol_oauth_states (state_hash, expires_at)
-            VALUES ($1, NOW() + ($2::BIGINT * INTERVAL '1 second'))
-        """, state_hash, OAUTH_STATE_LIFETIME)
-
-    params = {
-        "client_id": META_APP_ID,
-        "redirect_uri": META_REDIRECT_URI,
-        "state": state,
-        "response_type": "code",
-        "config_id": META_CONFIG_ID
-    }
-
-    auth_url = (
-        f"https://www.facebook.com/{META_GRAPH_VERSION}/dialog/oauth?"
-        + urlencode(params)
-    )
-
-    return {
-        "authorization_url": auth_url,
-        "expires_in": OAUTH_STATE_LIFETIME
-    }
-
-
-# =====================================
-# META — CALLBACK
-# =====================================
-
-@app.get("/meta/callback")
-async def meta_callback(
-    request: Request,
-    code: str | None = None,
-    state: str | None = None,
-    error: str | None = None
-):
-    require_meta_config()
-
-    if not state:
-        raise HTTPException(
-            status_code=400,
-            detail="Відсутній OAuth state"
-        )
-
-    state_hash = hashlib.sha256(state.encode("utf-8")).hexdigest()
-    async with pool.acquire() as conn:
-        valid_state = await conn.fetchval("""
-            DELETE FROM viewcontrol_oauth_states
-            WHERE state_hash = $1 AND expires_at > NOW()
-            RETURNING state_hash
-        """, state_hash)
-
-    if not valid_state:
-        raise HTTPException(
-            status_code=400,
-            detail="Недійсний або прострочений OAuth state"
-        )
-
-    if error:
-        return HTMLResponse(
-            "<h2>Авторизацію Meta скасовано.</h2>",
-            status_code=400
-        )
-
-    if not code:
-        raise HTTPException(
-            status_code=400,
-            detail="Meta не повернула код авторизації"
-        )
-
-    async with httpx.AsyncClient(timeout=20) as client:
-
-        token_response = await client.get(
-            f"https://graph.facebook.com/{META_GRAPH_VERSION}/oauth/access_token",
-            params={
-                "client_id": META_APP_ID,
-                "client_secret": META_APP_SECRET,
-                "redirect_uri": META_REDIRECT_URI,
-                "code": code
-            }
-        )
-
-        if token_response.status_code != 200:
-            raise HTTPException(
-                status_code=502,
-                detail="Не вдалося отримати токен Meta"
-            )
-
-        token_data = token_response.json()
-        short_token = token_data.get("access_token")
-
-        if not short_token:
-            raise HTTPException(
-                status_code=502,
-                detail="Meta не повернула токен"
-            )
-
-        long_response = await client.get(
-            f"https://graph.facebook.com/{META_GRAPH_VERSION}/oauth/access_token",
-            params={
-                "grant_type": "fb_exchange_token",
-                "client_id": META_APP_ID,
-                "client_secret": META_APP_SECRET,
-                "fb_exchange_token": short_token
-            }
-        )
-
-        if long_response.status_code != 200:
-            raise HTTPException(
-                status_code=502,
-                detail="Не вдалося отримати довгостроковий токен Meta"
-            )
-
-        long_data = long_response.json()
-        access_token = long_data.get("access_token")
-
-        if not access_token:
-            raise HTTPException(
-                status_code=502,
-                detail="Довгостроковий токен відсутній"
-            )
-
-        profile_response = await client.get(
-            f"https://graph.facebook.com/{META_GRAPH_VERSION}/me",
-            params={
-                "fields": "id",
-                "access_token": access_token
-            }
-        )
-
-        if profile_response.status_code != 200:
-            raise HTTPException(
-                status_code=502,
-                detail="Не вдалося отримати профіль Meta"
-            )
-
-        meta_user_id = profile_response.json().get("id")
-
-        if not meta_user_id:
-            raise HTTPException(
-                status_code=502,
-                detail="Meta не повернула ID користувача"
-            )
-
-    encrypted_token = fernet.encrypt(
-        access_token.encode()
-    ).decode()
-
-    expires_in = long_data.get("expires_in")
-
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO meta_connections (
-                meta_user_id,
-                encrypted_token,
-                token_expires_at
-            )
-            VALUES (
-                $1,
-                $2,
-                CASE
-                    WHEN $3::BIGINT IS NULL THEN NULL
-                    ELSE NOW() + ($3::BIGINT * INTERVAL '1 second')
-                END
-            )
-            ON CONFLICT (meta_user_id)
-            DO UPDATE SET
-                encrypted_token = EXCLUDED.encrypted_token,
-                token_expires_at = EXCLUDED.token_expires_at,
-                updated_at = NOW()
-        """, meta_user_id, encrypted_token, expires_in)
-
-    return HTMLResponse("""
-        <!DOCTYPE html>
-        <html lang="uk">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport"
-                  content="width=device-width, initial-scale=1">
-            <title>ViewControl</title>
-        </head>
-        <body style="
-            background:#0B1020;
-            color:white;
-            font-family:Arial;
-            text-align:center;
-            padding:60px 20px;
-        ">
-            <h1>✅ Meta підключено!</h1>
-            <p>Авторизацію Facebook успішно завершено.</p>
-            <p>Тепер можна повернутися до ViewControl.</p>
-        </body>
-        </html>
-    """)
-
-
-# =====================================
-# META — СТАТУС ПІДКЛЮЧЕННЯ
-# =====================================
-
-@app.get("/meta/status")
-async def meta_status(
-    x_api_key: str | None = Header(default=None),
-    authorization: str | None = Header(default=None)
-):
-    await check_access(x_api_key, authorization)
-
-    async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT
-                meta_user_id,
-                connected_at,
-                token_expires_at
-            FROM meta_connections
-            ORDER BY connected_at DESC
-        """)
-
-    return {
-        "configuration": get_meta_connection_status(),
-        "connected": len(rows) > 0,
-        "accounts": [
-            {
-                "meta_user_id": row["meta_user_id"],
-                "connected_at": row["connected_at"].isoformat(),
-                "token_expires_at": (
-                    row["token_expires_at"].isoformat()
-                    if row["token_expires_at"]
-                    else None
-                )
-            }
-            for row in rows
-        ]
-    }
-
-# =====================================
-# META — FACEBOOK PAGES ТА СТАТИСТИКА
-# =====================================
-
-async def get_saved_meta_token() -> str:
-    """Отримує збережений токен Meta без передачі його клієнту."""
-    require_meta_config()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("""
-            SELECT encrypted_token, token_expires_at
-            FROM meta_connections
-            WHERE token_expires_at IS NULL OR token_expires_at > NOW()
-            ORDER BY updated_at DESC
-            LIMIT 1
-        """)
-    if not row:
-        raise HTTPException(status_code=409, detail="Немає активного підключення Facebook. Підключіть Meta повторно.")
-    try:
-        return fernet.decrypt(row["encrypted_token"].encode()).decode()
-    except Exception:
-        raise HTTPException(status_code=503, detail="Не вдалося розшифрувати токен Meta. Перевірте ключ шифрування.")
-
-
-async def meta_graph_get(client: httpx.AsyncClient, path: str, token: str, **params):
-    """Безпечний запит до Graph API: не показує токен або сирі відповіді Meta."""
-    params["access_token"] = token
-    try:
-        response = await client.get(
-            f"https://graph.facebook.com/{META_GRAPH_VERSION}/{path.lstrip('/')}",
-            params=params,
-        )
-        data = response.json()
-    except (httpx.RequestError, ValueError):
-        raise HTTPException(status_code=502, detail="Meta API тимчасово недоступний або повернув некоректну відповідь")
-    if response.status_code >= 400 or (isinstance(data, dict) and "error" in data):
-        err = data.get("error", {}) if isinstance(data, dict) else {}
-        # Не повертаємо message/error_data: вони можуть містити чутливі відомості.
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "message": "Meta Graph API відхилив запит",
-                "meta_status": response.status_code,
-                "meta_error_code": err.get("code"),
-                "meta_error_subcode": err.get("error_subcode"),
-            },
-        )
-    return data
-
-
-async def get_facebook_pages(client: httpx.AsyncClient):
-    user_token = await get_saved_meta_token()
-    # Meta може повертати список сторінок посторінково.
-    pages = []
-    path = "me/accounts"
-    params = {"fields": "id,name,access_token,fan_count,followers_count", "limit": 100}
-    for _ in range(5):
-        data = await meta_graph_get(client, path, user_token, **params)
-        pages.extend(data.get("data", []))
-        next_url = data.get("paging", {}).get("next")
-        if not next_url:
-            break
-        # Не відкриваємо сторонні URL з відповіді: використовуємо лише cursor.
-        cursor = data.get("paging", {}).get("cursors", {}).get("after")
-        if not cursor:
-            break
-        path = "me/accounts"
-        params = {"fields": "id,name,access_token,fan_count,followers_count", "limit": 100, "after": cursor}
-    return pages
-
-
-@app.get("/meta/pages")
-async def meta_pages(
-    x_api_key: str | None = Header(default=None),
-    authorization: str | None = Header(default=None),
-):
-    await check_access(x_api_key, authorization)
-    async with httpx.AsyncClient(timeout=20) as client:
-        pages = await get_facebook_pages(client)
-    # Ніколи не повертаємо Page access_token у відповідь застосунку.
-    return {
-        "count": len(pages),
-        "pages": [
-            {
-                "id": page.get("id"),
-                "name": page.get("name"),
-                "followers_count": page.get("followers_count"),
-                "fan_count": page.get("fan_count"),
-            }
-            for page in pages
-        ],
-    }
-
-
-@app.get("/meta/facebook/stats")
-async def meta_facebook_stats(
-    page_id: str | None = Query(default=None, description="ID Facebook-сторінки з /meta/pages"),
-    x_api_key: str | None = Header(default=None),
-    authorization: str | None = Header(default=None),
-):
-    await check_access(x_api_key, authorization)
-    async with httpx.AsyncClient(timeout=20) as client:
-        pages = await get_facebook_pages(client)
-        if not pages:
-            return {"connected": True, "page_found": False, "message": "Meta не повернула доступних Facebook-сторінок"}
-        if page_id is not None:
-            page = next((item for item in pages if str(item.get("id")) == page_id), None)
-            if page is None:
-                raise HTTPException(status_code=404, detail="Сторінку з таким ID не знайдено серед доступних")
-        elif len(pages) > 1:
-            raise HTTPException(status_code=409, detail="Доступно кілька сторінок. Передайте page_id з /meta/pages.")
-        else:
-            page = pages[0]
-        page_token = page.get("access_token")
-        if not page_token:
-            raise HTTPException(status_code=502, detail="Meta не надала токен доступу до сторінки")
-
-        # Базові показники сторінки. Не всі метрики Insights доступні
-        # кожній сторінці або версії Graph API.
-        result = {
-            "connected": True,
-            "page_found": True,
-            "page": {
-                "id": page.get("id"),
-                "name": page.get("name"),
-                "followers_count": page.get("followers_count"),
-                "fan_count": page.get("fan_count"),
-            },
-            "recent_posts": [],
-            "insights": {},
-            "insights_note": "Охоплення й перегляди потребують окремої перевірки доступних метрик Meta Insights.",
-        }
-        # Помилка читання публікацій не повинна блокувати базові показники.
-        result["posts_status"] = "ok"
-        result["posts_error"] = None
-        try:
-            posts = await meta_graph_get(
-                client,
-                f"{page['id']}/posts",
-                page_token,
-                fields="id,message,created_time,permalink_url,reactions.summary(true).limit(0),comments.summary(true).limit(0)",
-                limit=10,
-            )
-        except HTTPException as exc:
-            # Не розкриваємо токени чи внутрішні повідомлення Meta.
-            result["posts_status"] = "unavailable"
-            result["posts_error"] = (
-                exc.detail if isinstance(exc.detail, dict)
-                else {"message": "Не вдалося отримати публікації Facebook"}
-            )
-        else:
-            for post in posts.get("data", []):
-                result["recent_posts"].append({
-                    "id": post.get("id"),
-                    "message": post.get("message"),
-                    "created_time": post.get("created_time"),
-                    "permalink_url": post.get("permalink_url"),
-                    "reactions_count": post.get("reactions", {}).get("summary", {}).get("total_count"),
-                    "comments_count": post.get("comments", {}).get("summary", {}).get("total_count"),
-                })
-        return result
-
-
-# =====================================
-# META — INSTAGRAM: ПЕРЕВІРКА ПІДКЛЮЧЕННЯ
-# =====================================
-
-@app.get("/meta/instagram/check")
-async def meta_instagram_check(
-    x_api_key: str | None = Header(default=None),
-    authorization: str | None = Header(default=None),
-):
-    """Перевіряє IG Business/Creator, прив'язаний до відомої Facebook Page.
-
-    Не повертає жодних access token або сирих повідомлень Meta.
-    """
-    await check_access(x_api_key, authorization)
-    target_page_id = "113368974934371"
-
-    async with httpx.AsyncClient(timeout=20) as client:
-        pages = await get_facebook_pages(client)
-        page = next(
-            (item for item in pages if str(item.get("id")) == target_page_id),
-            None,
-        )
-        if page is None:
-            return {
-                "connected": False,
-                "reason": "facebook_page_not_available",
-                "facebook_page_id": target_page_id,
-            }
-
-        page_token = page.get("access_token")
-        if not page_token:
-            return {
-                "connected": False,
-                "reason": "page_token_missing",
-                "facebook_page_id": target_page_id,
-            }
-
-        try:
-            link = await meta_graph_get(
-                client,
-                target_page_id,
-                page_token,
-                fields="id,name,instagram_business_account{id,username}",
-            )
-        except HTTPException as exc:
-            return {
-                "connected": False,
-                "reason": "instagram_lookup_failed",
-                "facebook_page_id": target_page_id,
-                "error": exc.detail if isinstance(exc.detail, dict)
-                else {"message": "Помилка перевірки Instagram"},
-            }
-
-        ig = link.get("instagram_business_account")
-        if not ig or not ig.get("id"):
-            return {
-                "connected": False,
-                "reason": "instagram_account_not_returned",
-                "facebook_page_id": target_page_id,
-                "facebook_page_name": page.get("name"),
-            }
-
-        result = {
-            "connected": True,
-            "facebook_page_id": target_page_id,
-            "facebook_page_name": page.get("name"),
-            "instagram": {
-                "id": ig.get("id"),
-                "username": ig.get("username"),
-                "followers_count": None,
-            },
-            "followers_status": "unavailable",
-        }
-        try:
-            profile = await meta_graph_get(
-                client,
-                str(ig["id"]),
-                page_token,
-                fields="id,username,followers_count",
-            )
-            result["instagram"]["username"] = profile.get("username") or ig.get("username")
-            result["instagram"]["followers_count"] = profile.get("followers_count")
-            result["followers_status"] = "ok" if profile.get("followers_count") is not None else "unavailable"
-        except HTTPException as exc:
-            result["followers_error"] = exc.detail if isinstance(exc.detail, dict) else {
-                "message": "Не вдалося отримати кількість підписників"
-            }
-        return result
