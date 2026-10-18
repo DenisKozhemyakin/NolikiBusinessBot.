@@ -1233,3 +1233,60 @@ async def user_meta_add_page(
                                   updated_at = NOW()
                 """, user["id"], item["platform"], item["id"], item["name"], encrypted)
     return {"connected": connected}
+
+
+# =====================================
+# VIEWCONTROL — PERSONAL FACEBOOK STATISTICS
+# =====================================
+
+@app.get("/user/facebook/stats")
+async def user_facebook_stats(
+    page_id: str = Query(..., pattern=r"^[0-9]{5,30}$"),
+    authorization: str | None = Header(default=None),
+):
+    """Page metrics for the authenticated owner's saved Facebook connection only."""
+    user = await current_user(authorization)
+    require_meta_config()
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT account_name, encrypted_token
+            FROM viewcontrol_platform_connections
+            WHERE user_id = $1
+              AND platform = 'facebook'
+              AND external_account_id = $2
+        """, user["id"], page_id)
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Facebook-сторінку не підключено до цього користувача")
+    if not row["encrypted_token"]:
+        raise HTTPException(status_code=409, detail="Відсутній токен сторінки. Оновіть підключення Meta")
+
+    try:
+        page_token = fernet.decrypt(row["encrypted_token"].encode()).decode()
+    except Exception:
+        raise HTTPException(status_code=503, detail="Не вдалося прочитати токен сторінки")
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        # Do not return the Page token or raw Meta response to the mobile app.
+        page = await meta_graph_get(
+            client, page_id, page_token,
+            fields="id,name,followers_count,fan_count",
+        )
+
+    if str(page.get("id")) != page_id:
+        raise HTTPException(status_code=502, detail="Meta повернула іншу Facebook-сторінку")
+
+    return {
+        "connected": True,
+        "page_found": True,
+        "page": {
+            "id": page_id,
+            "name": page.get("name") or row["account_name"],
+            "followers_count": page.get("followers_count"),
+            "fan_count": page.get("fan_count"),
+        },
+        "recent_posts": [],
+        "posts_status": "not_requested",
+        "insights_note": "Охоплення та перегляди додамо окремо після перевірки дозволів Meta Insights.",
+    }
