@@ -26,6 +26,7 @@ META_APP_ID = os.getenv("META_APP_ID")
 META_APP_SECRET = os.getenv("META_APP_SECRET")
 META_REDIRECT_URI = os.getenv("META_REDIRECT_URI")
 META_ENCRYPTION_KEY = os.getenv("META_ENCRYPTION_KEY")
+META_CONFIG_ID = os.getenv("META_CONFIG_ID")
 
 META_GRAPH_VERSION = "v24.0"
 
@@ -207,6 +208,7 @@ def require_meta_config():
         META_APP_ID,
         META_APP_SECRET,
         META_REDIRECT_URI,
+        META_CONFIG_ID,
         fernet
     ]):
         raise HTTPException(
@@ -220,6 +222,7 @@ def get_meta_connection_status():
         META_APP_ID,
         META_APP_SECRET,
         META_REDIRECT_URI,
+        META_CONFIG_ID,
         fernet
     ]) else "not_configured"
 
@@ -244,8 +247,8 @@ async def meta_connect(
         "client_id": META_APP_ID,
         "redirect_uri": META_REDIRECT_URI,
         "state": state,
-        "scope": ",".join(META_SCOPES),
-        "response_type": "code"
+        "response_type": "code",
+        "config_id": META_CONFIG_ID
     }
 
     auth_url = (
