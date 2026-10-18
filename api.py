@@ -42,7 +42,7 @@ META_SCOPES = [
 ]
 
 SESSION_LIFETIME = 24 * 60 * 60
-OAUTH_STATE_LIFETIME = 10 * 60
+OAUTH_STATE_LIFETIME = 30 * 60
 
 pool = None
 fernet = None
