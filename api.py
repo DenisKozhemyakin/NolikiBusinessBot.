@@ -104,6 +104,20 @@ async def lifespan(app: FastAPI):
                 expires_at TIMESTAMPTZ NOT NULL
             )
         """)
+        # Each platform connection belongs to one ViewControl user.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS viewcontrol_platform_connections (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES viewcontrol_users(id) ON DELETE CASCADE,
+                platform TEXT NOT NULL,
+                external_account_id TEXT NOT NULL,
+                account_name TEXT,
+                encrypted_token TEXT,
+                connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (user_id, platform, external_account_id)
+            )
+        """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS viewcontrol_oauth_states (
                 state_hash TEXT PRIMARY KEY,
