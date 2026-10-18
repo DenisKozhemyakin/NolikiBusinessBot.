@@ -974,3 +974,32 @@ async def meta_instagram_stats(
             )
         return result
 
+
+
+# =====================================
+# VIEWCONTROL — ПЕРСОНАЛЬНІ ПЛАТФОРМИ
+# =====================================
+
+@app.get("/platforms/my")
+async def my_platforms(authorization: str | None = Header(default=None)):
+    user = await current_user(authorization)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, platform, external_account_id, account_name, connected_at, updated_at
+            FROM viewcontrol_platform_connections
+            WHERE user_id = $1
+            ORDER BY connected_at DESC, id DESC
+        """, user["id"])
+    return {
+        "platforms": [
+            {
+                "id": row["id"],
+                "platform": row["platform"],
+                "external_account_id": row["external_account_id"],
+                "account_name": row["account_name"],
+                "connected_at": row["connected_at"].isoformat(),
+                "updated_at": row["updated_at"].isoformat(),
+            }
+            for row in rows
+        ]
+    }
