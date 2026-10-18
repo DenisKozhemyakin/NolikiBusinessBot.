@@ -118,6 +118,14 @@ async def lifespan(app: FastAPI):
                 UNIQUE (user_id, platform, external_account_id)
             )
         """)
+        # OAuth state for individual ViewControl users; legacy OAuth stays separate.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS viewcontrol_user_meta_oauth_states (
+                state_hash TEXT PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES viewcontrol_users(id) ON DELETE CASCADE,
+                expires_at TIMESTAMPTZ NOT NULL
+            )
+        """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS viewcontrol_oauth_states (
                 state_hash TEXT PRIMARY KEY,
@@ -438,6 +446,16 @@ async def meta_callback(
         )
 
     state_hash = hashlib.sha256(state.encode("utf-8")).hexdigest()
+    # User-owned OAuth flows are handled independently of the legacy admin flow.
+    async with pool.acquire() as conn:
+        personal_user_id = await conn.fetchval("""
+            DELETE FROM viewcontrol_user_meta_oauth_states
+            WHERE state_hash = $1 AND expires_at > NOW()
+            RETURNING user_id
+        """, state_hash)
+    if personal_user_id is not None:
+        return await complete_personal_meta_oauth(int(personal_user_id), code, error)
+
     async with pool.acquire() as conn:
         valid_state = await conn.fetchval("""
             DELETE FROM viewcontrol_oauth_states
@@ -1003,3 +1021,120 @@ async def my_platforms(authorization: str | None = Header(default=None)):
             for row in rows
         ]
     }
+
+
+# =====================================
+# VIEWCONTROL — ПЕРСОНАЛЬНИЙ META OAUTH
+# Existing /meta/callback receives the Meta redirect and dispatches
+# personal OAuth state to complete_personal_meta_oauth.
+# =====================================
+
+@app.get("/user/meta/connect")
+async def user_meta_connect(authorization: str | None = Header(default=None)):
+    user = await current_user(authorization)
+    require_meta_config()
+    state = secrets.token_urlsafe(32)
+    state_hash = hashlib.sha256(state.encode("utf-8")).hexdigest()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO viewcontrol_user_meta_oauth_states (state_hash, user_id, expires_at)
+            VALUES ($1, $2, NOW() + ($3::BIGINT * INTERVAL '1 second'))
+        """, state_hash, user["id"], OAUTH_STATE_LIFETIME)
+    auth_url = "https://www.facebook.com/" + META_GRAPH_VERSION + "/dialog/oauth?" + urlencode({
+        "client_id": META_APP_ID,
+        "redirect_uri": META_REDIRECT_URI,
+        "state": state,
+        "response_type": "code",
+        "config_id": META_CONFIG_ID,
+    })
+    return {"authorization_url": auth_url, "expires_in": OAUTH_STATE_LIFETIME}
+
+
+async def complete_personal_meta_oauth(user_id: int, code: str | None, error: str | None):
+    if error:
+        return HTMLResponse("<h2>Авторизацію Meta скасовано.</h2>", status_code=400)
+    if not code:
+        raise HTTPException(status_code=400, detail="Meta не повернула код")
+    require_meta_config()
+
+    async with httpx.AsyncClient(timeout=25) as client:
+        short = await client.get(
+            f"https://graph.facebook.com/{META_GRAPH_VERSION}/oauth/access_token",
+            params={"client_id": META_APP_ID, "client_secret": META_APP_SECRET,
+                    "redirect_uri": META_REDIRECT_URI, "code": code},
+        )
+        if short.status_code != 200 or not short.json().get("access_token"):
+            raise HTTPException(status_code=502, detail="Meta не видала токен авторизації")
+        exchanged = await client.get(
+            f"https://graph.facebook.com/{META_GRAPH_VERSION}/oauth/access_token",
+            params={"grant_type": "fb_exchange_token", "client_id": META_APP_ID,
+                    "client_secret": META_APP_SECRET,
+                    "fb_exchange_token": short.json()["access_token"]},
+        )
+        if exchanged.status_code != 200 or not exchanged.json().get("access_token"):
+            raise HTTPException(status_code=502, detail="Meta не видала довгостроковий токен")
+        user_token = exchanged.json()["access_token"]
+
+        # Read only Facebook Pages actually granted to this Meta user.
+        pages = []
+        url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/me/accounts"
+        params = {"fields": "id,name,access_token,instagram_business_account{id,username}",
+                  "limit": 100, "access_token": user_token}
+        for _ in range(10):
+            response = await client.get(url, params=params)
+            if response.status_code != 200:
+                raise HTTPException(status_code=502, detail="Не вдалося отримати сторінки Facebook")
+            payload = response.json()
+            pages.extend(payload.get("data", []))
+            next_url = payload.get("paging", {}).get("next")
+            if not next_url:
+                break
+            url, params = next_url, None
+
+    connections = []
+    for page in pages:
+        page_id = page.get("id")
+        page_token = page.get("access_token")
+        if not page_id or not page_token:
+            continue
+        connections.append(("facebook", str(page_id), page.get("name"),
+                            fernet.encrypt(page_token.encode()).decode()))
+        ig = page.get("instagram_business_account") or {}
+        if ig.get("id"):
+            connections.append(("instagram", str(ig["id"]), ig.get("username"),
+                                fernet.encrypt(page_token.encode()).decode()))
+
+    # Only the user identified by the single-use OAuth state owns these rows.
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            for platform, external_id, account_name, encrypted in connections:
+                await conn.execute("""
+                    INSERT INTO viewcontrol_platform_connections
+                        (user_id, platform, external_account_id, account_name, encrypted_token)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (user_id, platform, external_account_id)
+                    DO UPDATE SET account_name = EXCLUDED.account_name,
+                                  encrypted_token = EXCLUDED.encrypted_token,
+                                  updated_at = NOW()
+                """, user_id, platform, external_id, account_name, encrypted)
+
+    return HTMLResponse("""<!doctype html><html lang="uk"><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1"></head>
+    <body style="background:#0B1020;color:white;font-family:Arial;text-align:center;padding:55px 15px">
+    <h2>Підключення Meta завершено</h2>
+    <p>Повернись до ViewControl і онови список платформ.</p>
+    <p>Якщо сторінки не з'явилися, перевір дозволи Meta для сторінок.</p>
+    </body></html>""")
+
+
+@app.get("/user/meta/status")
+async def user_meta_status(authorization: str | None = Header(default=None)):
+    user = await current_user(authorization)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT platform, external_account_id, account_name
+            FROM viewcontrol_platform_connections
+            WHERE user_id = $1 AND platform IN ('facebook', 'instagram')
+            ORDER BY platform, account_name
+        """, user["id"])
+    return {"accounts": [dict(row) for row in rows]}
