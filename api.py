@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 import asyncpg
 import httpx
 from cryptography.fernet import Fernet
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
@@ -587,6 +587,7 @@ async def meta_pages(
 
 @app.get("/meta/facebook/stats")
 async def meta_facebook_stats(
+    page_id: str | None = Query(default=None, description="ID Facebook-сторінки з /meta/pages"),
     x_api_key: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
 ):
@@ -595,9 +596,14 @@ async def meta_facebook_stats(
         pages = await get_facebook_pages(client)
         if not pages:
             return {"connected": True, "page_found": False, "message": "Meta не повернула доступних Facebook-сторінок"}
-        if len(pages) > 1:
-            raise HTTPException(status_code=409, detail="Доступно кілька сторінок. Потрібно вибрати сторінку явно.")
-        page = pages[0]
+        if page_id is not None:
+            page = next((item for item in pages if str(item.get("id")) == page_id), None)
+            if page is None:
+                raise HTTPException(status_code=404, detail="Сторінку з таким ID не знайдено серед доступних")
+        elif len(pages) > 1:
+            raise HTTPException(status_code=409, detail="Доступно кілька сторінок. Передайте page_id з /meta/pages.")
+        else:
+            page = pages[0]
         page_token = page.get("access_token")
         if not page_token:
             raise HTTPException(status_code=502, detail="Meta не надала токен доступу до сторінки")
