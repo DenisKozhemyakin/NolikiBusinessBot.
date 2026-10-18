@@ -118,6 +118,15 @@ async def lifespan(app: FastAPI):
                 UNIQUE (user_id, platform, external_account_id)
             )
         """)
+        # User-owned Meta user token, encrypted at rest. Never exposed via API.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS viewcontrol_user_meta_tokens (
+                user_id BIGINT PRIMARY KEY REFERENCES viewcontrol_users(id) ON DELETE CASCADE,
+                encrypted_token TEXT NOT NULL,
+                token_expires_at TIMESTAMPTZ,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
         # OAuth state for individual ViewControl users; legacy OAuth stays separate.
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS viewcontrol_user_meta_oauth_states (
@@ -1091,6 +1100,22 @@ async def complete_personal_meta_oauth(user_id: int, code: str | None, error: st
                 break
             url, params = next_url, None
 
+    # Keep the user's own Meta token so missing Pages can be verified by ID.
+    # Do not confuse it with the shared legacy meta_connections table.
+    expires_in = exchanged.json().get("expires_in")
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO viewcontrol_user_meta_tokens
+                (user_id, encrypted_token, token_expires_at)
+            VALUES ($1, $2,
+                CASE WHEN $3::BIGINT IS NULL THEN NULL
+                     ELSE NOW() + ($3::BIGINT * INTERVAL '1 second') END)
+            ON CONFLICT (user_id) DO UPDATE SET
+                encrypted_token = EXCLUDED.encrypted_token,
+                token_expires_at = EXCLUDED.token_expires_at,
+                updated_at = NOW()
+        """, user_id, fernet.encrypt(user_token.encode()).decode(), expires_in)
+
     connections = []
     for page in pages:
         page_id = page.get("id")
@@ -1138,3 +1163,73 @@ async def user_meta_status(authorization: str | None = Header(default=None)):
             ORDER BY platform, account_name
         """, user["id"])
     return {"accounts": [dict(row) for row in rows]}
+
+
+# =====================================
+# VIEWCONTROL — ADD MISSING FACEBOOK PAGE BY ID
+# =====================================
+
+class AddMetaPageRequest(BaseModel):
+    page_id: str = Field(pattern=r"^[0-9]{5,30}$")
+
+
+@app.post("/user/meta/pages/add")
+async def user_meta_add_page(
+    data: AddMetaPageRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Connect a Page only if Meta grants the signed-in user its Page token."""
+    user = await current_user(authorization)
+    require_meta_config()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT encrypted_token FROM viewcontrol_user_meta_tokens
+            WHERE user_id = $1 AND (token_expires_at IS NULL OR token_expires_at > NOW())
+        """, user["id"])
+    if not row:
+        raise HTTPException(
+            status_code=409,
+            detail="Потрібно повторно підключити Meta через /user/meta/connect, щоб зберегти персональний токен",
+        )
+    try:
+        user_token = fernet.decrypt(row["encrypted_token"].encode()).decode()
+    except Exception:
+        raise HTTPException(status_code=503, detail="Не вдалося прочитати персональний токен Meta")
+
+    async with httpx.AsyncClient(timeout=25) as client:
+        # Access to a Page's public profile alone is NOT enough.
+        # Require the Page access_token granted to this user and app.
+        page = await meta_graph_get(
+            client, data.page_id, user_token,
+            fields="id,name,access_token,instagram_business_account{id,username}",
+        )
+        page_token = page.get("access_token")
+        if str(page.get("id")) != data.page_id or not page_token:
+            raise HTTPException(
+                status_code=403,
+                detail="Meta не видала токен цієї сторінки для вашого облікового запису",
+            )
+        # Verify that the returned Page token can access this exact Page.
+        verified = await meta_graph_get(client, data.page_id, page_token, fields="id,name")
+        if str(verified.get("id")) != data.page_id:
+            raise HTTPException(status_code=403, detail="Токен сторінки не пройшов перевірку")
+
+    encrypted = fernet.encrypt(page_token.encode()).decode()
+    ig = page.get("instagram_business_account") or {}
+    connected = [{"platform": "facebook", "id": data.page_id, "name": page.get("name")}]
+    if ig.get("id"):
+        connected.append({"platform": "instagram", "id": str(ig["id"]), "name": ig.get("username")})
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            for item in connected:
+                await conn.execute("""
+                    INSERT INTO viewcontrol_platform_connections
+                        (user_id, platform, external_account_id, account_name, encrypted_token)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (user_id, platform, external_account_id)
+                    DO UPDATE SET account_name = EXCLUDED.account_name,
+                                  encrypted_token = EXCLUDED.encrypted_token,
+                                  updated_at = NOW()
+                """, user["id"], item["platform"], item["id"], item["name"], encrypted)
+    return {"connected": connected}
