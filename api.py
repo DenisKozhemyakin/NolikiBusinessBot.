@@ -491,3 +491,146 @@ async def meta_status(
             for row in rows
         ]
     }
+
+# =====================================
+# META — FACEBOOK PAGES ТА СТАТИСТИКА
+# =====================================
+
+async def get_saved_meta_token() -> str:
+    """Отримує збережений токен Meta без передачі його клієнту."""
+    require_meta_config()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT encrypted_token, token_expires_at
+            FROM meta_connections
+            WHERE token_expires_at IS NULL OR token_expires_at > NOW()
+            ORDER BY updated_at DESC
+            LIMIT 1
+        """)
+    if not row:
+        raise HTTPException(status_code=409, detail="Немає активного підключення Facebook. Підключіть Meta повторно.")
+    try:
+        return fernet.decrypt(row["encrypted_token"].encode()).decode()
+    except Exception:
+        raise HTTPException(status_code=503, detail="Не вдалося розшифрувати токен Meta. Перевірте ключ шифрування.")
+
+
+async def meta_graph_get(client: httpx.AsyncClient, path: str, token: str, **params):
+    """Безпечний запит до Graph API: не показує токен або сирі відповіді Meta."""
+    params["access_token"] = token
+    try:
+        response = await client.get(
+            f"https://graph.facebook.com/{META_GRAPH_VERSION}/{path.lstrip('/')}",
+            params=params,
+        )
+        data = response.json()
+    except (httpx.RequestError, ValueError):
+        raise HTTPException(status_code=502, detail="Meta API тимчасово недоступний або повернув некоректну відповідь")
+    if response.status_code >= 400 or (isinstance(data, dict) and "error" in data):
+        err = data.get("error", {}) if isinstance(data, dict) else {}
+        # Не повертаємо message/error_data: вони можуть містити чутливі відомості.
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "Meta Graph API відхилив запит",
+                "meta_status": response.status_code,
+                "meta_error_code": err.get("code"),
+                "meta_error_subcode": err.get("error_subcode"),
+            },
+        )
+    return data
+
+
+async def get_facebook_pages(client: httpx.AsyncClient):
+    user_token = await get_saved_meta_token()
+    # Meta може повертати список сторінок посторінково.
+    pages = []
+    path = "me/accounts"
+    params = {"fields": "id,name,access_token,fan_count,followers_count", "limit": 100}
+    for _ in range(5):
+        data = await meta_graph_get(client, path, user_token, **params)
+        pages.extend(data.get("data", []))
+        next_url = data.get("paging", {}).get("next")
+        if not next_url:
+            break
+        # Не відкриваємо сторонні URL з відповіді: використовуємо лише cursor.
+        cursor = data.get("paging", {}).get("cursors", {}).get("after")
+        if not cursor:
+            break
+        path = "me/accounts"
+        params = {"fields": "id,name,access_token,fan_count,followers_count", "limit": 100, "after": cursor}
+    return pages
+
+
+@app.get("/meta/pages")
+async def meta_pages(
+    x_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+):
+    await check_access(x_api_key, authorization)
+    async with httpx.AsyncClient(timeout=20) as client:
+        pages = await get_facebook_pages(client)
+    # Ніколи не повертаємо Page access_token у відповідь застосунку.
+    return {
+        "count": len(pages),
+        "pages": [
+            {
+                "id": page.get("id"),
+                "name": page.get("name"),
+                "followers_count": page.get("followers_count"),
+                "fan_count": page.get("fan_count"),
+            }
+            for page in pages
+        ],
+    }
+
+
+@app.get("/meta/facebook/stats")
+async def meta_facebook_stats(
+    x_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+):
+    await check_access(x_api_key, authorization)
+    async with httpx.AsyncClient(timeout=20) as client:
+        pages = await get_facebook_pages(client)
+        if not pages:
+            return {"connected": True, "page_found": False, "message": "Meta не повернула доступних Facebook-сторінок"}
+        if len(pages) > 1:
+            raise HTTPException(status_code=409, detail="Доступно кілька сторінок. Потрібно вибрати сторінку явно.")
+        page = pages[0]
+        page_token = page.get("access_token")
+        if not page_token:
+            raise HTTPException(status_code=502, detail="Meta не надала токен доступу до сторінки")
+
+        # Базові показники сторінки. Не всі метрики Insights доступні
+        # кожній сторінці або версії Graph API.
+        result = {
+            "connected": True,
+            "page_found": True,
+            "page": {
+                "id": page.get("id"),
+                "name": page.get("name"),
+                "followers_count": page.get("followers_count"),
+                "fan_count": page.get("fan_count"),
+            },
+            "recent_posts": [],
+            "insights": {},
+            "insights_note": "Охоплення й перегляди потребують окремої перевірки доступних метрик Meta Insights.",
+        }
+        posts = await meta_graph_get(
+            client,
+            f"{page['id']}/posts",
+            page_token,
+            fields="id,message,created_time,permalink_url,reactions.summary(true).limit(0),comments.summary(true).limit(0)",
+            limit=10,
+        )
+        for post in posts.get("data", []):
+            result["recent_posts"].append({
+                "id": post.get("id"),
+                "message": post.get("message"),
+                "created_time": post.get("created_time"),
+                "permalink_url": post.get("permalink_url"),
+                "reactions_count": post.get("reactions", {}).get("summary", {}).get("total_count"),
+                "comments_count": post.get("comments", {}).get("summary", {}).get("total_count"),
+            })
+        return result
