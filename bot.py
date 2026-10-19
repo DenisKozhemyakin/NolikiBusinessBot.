@@ -11,7 +11,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message
+from aiogram.types import Message, KeyboardButton
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from dotenv import load_dotenv
 
@@ -133,6 +133,42 @@ def main_menu():
     keyboard.adjust(2)
 
     return keyboard.as_markup(resize_keyboard=True)
+
+
+def phone_menu():
+    keyboard = ReplyKeyboardBuilder()
+    keyboard.row(KeyboardButton(text="📱 Поділитися номером", request_contact=True))
+    keyboard.button(text="❌ Скасувати")
+    keyboard.adjust(1)
+    return keyboard.as_markup(resize_keyboard=True)
+
+
+# Поширені коди українських мобільних номерів. Перенесення номера між
+# операторами не змінює його код.
+MOBILE_PREFIXES = {
+    "39", "50", "63", "66", "67", "68", "73", "75", "77", "89",
+    "91", "92", "93", "94", "95", "96", "97", "98", "99",
+}
+
+
+def normalize_ua_mobile(value: str) -> str | None:
+    # Дозволяємо пробіли, дефіси та дужки, але не літери й інші символи.
+    if not re.fullmatch(r"[+\d\s()\-]+", value):
+        return None
+    cleaned = re.sub(r"[\s()\-]", "", value)
+    if cleaned.startswith("+380"):
+        digits = cleaned[1:]
+    elif cleaned.startswith("380"):
+        digits = cleaned
+    elif cleaned.startswith("0"):
+        digits = "38" + cleaned
+    else:
+        return None
+    if not re.fullmatch(r"380\d{9}", digits):
+        return None
+    if digits[3:5] not in MOBILE_PREFIXES:
+        return None
+    return "+" + digits
 
 
 def cancel_menu():
@@ -278,8 +314,9 @@ async def order_address(message: Message, state: FSMContext):
     await state.set_state(OrderForm.phone)
 
     await message.answer(
-        "📱 Вкажіть контактний номер телефону.",
-        reply_markup=cancel_menu()
+        "📱 Вкажіть український мобільний номер (+380XXXXXXXXX) "
+        "або натисніть «Поділитися номером».",
+        reply_markup=phone_menu()
     )
 
 
@@ -318,20 +355,30 @@ def send_email(subject, body):
 @dp.message(OrderForm.phone)
 async def order_phone(message: Message, state: FSMContext):
 
-    if not message.text:
-        await message.answer("Введіть номер телефону.")
-        return
+    if message.contact:
+        # Telegram дозволяє надіслати чужий контакт вручну: не приймаємо його
+        # як власний номер клієнта.
+        if message.contact.user_id != message.from_user.id:
+            await message.answer(
+                "❗ Надішліть власний номер кнопкою нижче або введіть його вручну.",
+                reply_markup=phone_menu()
+            )
+            return
+        raw_phone = message.contact.phone_number
+    else:
+        raw_phone = message.text or ""
 
-    phone = re.sub(r"[\s()+-]", "", message.text)
-
-    if not phone.isdigit() or not 9 <= len(phone) <= 15:
+    phone = normalize_ua_mobile(raw_phone)
+    if phone is None:
         await message.answer(
-            "❗ Неправильний формат номера.\n"
-            "Приклад: +380XXXXXXXXX"
+            "❗ Вкажіть коректний український мобільний номер.\n"
+            "Приклад: +380671234567 або 0671234567.\n"
+            "Можна також скористатися кнопкою «Поділитися номером».",
+            reply_markup=phone_menu()
         )
         return
 
-    await state.update_data(phone=message.text.strip())
+    await state.update_data(phone=phone)
     data = await state.get_data()
 
     username = (
