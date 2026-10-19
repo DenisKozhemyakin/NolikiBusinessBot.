@@ -1290,3 +1290,75 @@ async def user_facebook_stats(
         "posts_status": "not_requested",
         "insights_note": "Охоплення та перегляди додамо окремо після перевірки дозволів Meta Insights.",
     }
+
+# =====================================
+# VIEWCONTROL — PERSONAL INSTAGRAM STATISTICS
+# =====================================
+
+@app.get("/user/instagram/stats")
+async def user_instagram_stats(
+    instagram_id: str = Query(..., pattern=r"^[0-9]{5,30}$"),
+    authorization: str | None = Header(default=None),
+):
+    """Read metrics only for an Instagram account owned by the signed-in user."""
+    user = await current_user(authorization)
+    require_meta_config()
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT account_name, encrypted_token
+            FROM viewcontrol_platform_connections
+            WHERE user_id = $1
+              AND platform = 'instagram'
+              AND external_account_id = $2
+        """, user["id"], instagram_id)
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Instagram-акаунт не підключено до цього користувача")
+    if not row["encrypted_token"]:
+        raise HTTPException(status_code=409, detail="Відсутній токен Instagram. Оновіть підключення Meta")
+
+    try:
+        page_token = fernet.decrypt(row["encrypted_token"].encode()).decode()
+    except Exception:
+        raise HTTPException(status_code=503, detail="Не вдалося прочитати токен Instagram")
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        profile = await meta_graph_get(
+            client, instagram_id, page_token,
+            fields="id,username,name,followers_count,media_count",
+        )
+        if str(profile.get("id")) != instagram_id:
+            raise HTTPException(status_code=502, detail="Meta повернула інший Instagram-акаунт")
+
+        result = {
+            "connected": True,
+            "instagram": {
+                "id": instagram_id,
+                "username": profile.get("username") or row["account_name"],
+                "name": profile.get("name"),
+                "followers_count": profile.get("followers_count"),
+                "media_count": profile.get("media_count"),
+            },
+            "reach": [],
+            "reach_status": "unavailable",
+        }
+
+        # Missing insights permission must not hide basic profile statistics.
+        try:
+            insights = await meta_graph_get(
+                client, f"{instagram_id}/insights", page_token,
+                metric="reach", period="day",
+            )
+            for metric in insights.get("data", []):
+                if metric.get("name") == "reach":
+                    result["reach"] = [
+                        {"value": point.get("value"), "end_time": point.get("end_time")}
+                        for point in metric.get("values", [])
+                    ]
+                    result["reach_status"] = "ok"
+                    break
+        except HTTPException:
+            pass
+
+    return result
