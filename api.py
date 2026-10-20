@@ -12,6 +12,7 @@ import asyncpg
 import httpx
 from cryptography.fernet import Fernet
 from fastapi import FastAPI, Header, HTTPException, Request, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -151,6 +152,17 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="ViewControl API",
     lifespan=lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://gleeful-bombolone-fe7bd5.netlify.app",
+    ],
+    allow_origin_regex=r"^http://localhost:(8081|8089)$",
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
